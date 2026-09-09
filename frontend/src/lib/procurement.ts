@@ -1,12 +1,13 @@
 import type {
   ProcurementRequest,
+  ProcurementRequirement,
   ProcurementStatus,
 } from '../types/procurement'
 
 const STORAGE_KEY = 'procurepilot.procurements'
 
-function generateId(): string {
-  return `proc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+function generateId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
 function getStoredProcurements(): ProcurementRequest[] {
@@ -17,7 +18,13 @@ function getStoredProcurements(): ProcurementRequest[] {
       return []
     }
 
-    return JSON.parse(stored) as ProcurementRequest[]
+    const parsed = JSON.parse(stored)
+
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return parsed as ProcurementRequest[]
   } catch {
     return []
   }
@@ -75,7 +82,7 @@ export function createProcurement(
   const now = new Date().toISOString()
 
   const procurement: ProcurementRequest = {
-    id: generateId(),
+    id: generateId('proc'),
     title: generateProcurementTitle(originalRequest),
     originalRequest: originalRequest.trim(),
     status: 'draft',
@@ -93,9 +100,19 @@ export function createProcurement(
   return procurement
 }
 
-export function updateProcurementStatus(
+export function updateProcurement(
   id: string,
-  status: ProcurementStatus,
+  updates: Partial<
+    Pick<
+      ProcurementRequest,
+      | 'title'
+      | 'originalRequest'
+      | 'status'
+      | 'requirements'
+      | 'constraints'
+      | 'missingInformation'
+    >
+  >,
 ): ProcurementRequest | undefined {
   const procurements = getStoredProcurements()
 
@@ -109,13 +126,82 @@ export function updateProcurementStatus(
 
   const updated: ProcurementRequest = {
     ...procurements[index],
-    status,
+    ...updates,
     updatedAt: new Date().toISOString(),
   }
 
   procurements[index] = updated
-
   saveProcurements(procurements)
 
   return updated
+}
+
+export function updateProcurementStatus(
+  id: string,
+  status: ProcurementStatus,
+): ProcurementRequest | undefined {
+  return updateProcurement(id, { status })
+}
+
+export function addRequirement(
+  id: string,
+  requirement: Omit<ProcurementRequirement, 'id'>,
+): ProcurementRequest | undefined {
+  const procurement = getProcurementById(id)
+
+  if (!procurement) {
+    return undefined
+  }
+
+  const newRequirement: ProcurementRequirement = {
+    ...requirement,
+    id: generateId('req'),
+  }
+
+  return updateProcurement(id, {
+    requirements: [
+      ...procurement.requirements,
+      newRequirement,
+    ],
+  })
+}
+
+export function updateRequirement(
+  procurementId: string,
+  requirementId: string,
+  updates: Partial<Omit<ProcurementRequirement, 'id'>>,
+): ProcurementRequest | undefined {
+  const procurement = getProcurementById(procurementId)
+
+  if (!procurement) {
+    return undefined
+  }
+
+  const requirements = procurement.requirements.map(
+    (requirement) =>
+      requirement.id === requirementId
+        ? { ...requirement, ...updates }
+        : requirement,
+  )
+
+  return updateProcurement(procurementId, {
+    requirements,
+  })
+}
+
+export function removeRequirement(
+  procurementId: string,
+  requirementId: string,
+): ProcurementRequest | undefined {
+  const procurement = getProcurementById(procurementId)
+
+  if (!procurement) {
+    return undefined
+  }
+
+  return updateProcurement(procurementId, {
+    requirements: procurement.requirements.filter(
+      (requirement) => requirement.id !== requirementId,
+    ),
+  })
 }

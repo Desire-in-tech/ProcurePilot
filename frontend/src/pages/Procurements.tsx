@@ -5,7 +5,10 @@ import {
   Plus,
   Search,
 } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import {
+  Link,
+  useNavigate,
+} from 'react-router-dom'
 import {
   createProcurement,
   getProcurements,
@@ -13,6 +16,8 @@ import {
 import type { ProcurementRequest } from '../types/procurement'
 
 function Procurements() {
+  const navigate = useNavigate()
+
   const [request, setRequest] = useState('')
   const [procurements, setProcurements] = useState<ProcurementRequest[]>([])
   const [isCreating, setIsCreating] = useState(false)
@@ -33,9 +38,15 @@ function Procurements() {
 
     const procurement = createProcurement(trimmedRequest)
 
-    setProcurements((current) => [procurement, ...current])
+    setProcurements((current) => [
+      procurement,
+      ...current,
+    ])
+
     setRequest('')
     setIsCreating(false)
+
+    navigate(`/procurements/${procurement.id}`)
   }
 
   const filteredProcurements = procurements.filter((procurement) =>
@@ -49,7 +60,9 @@ function Procurements() {
       <header className="page-header">
         <div>
           <p className="eyebrow">PROCUREMENT WORKSPACE</p>
+
           <h1>Procurements</h1>
+
           <p className="page-description">
             Turn what your organization needs into a structured supplier
             search.
@@ -73,6 +86,7 @@ function Procurements() {
         <div className="section-heading">
           <div>
             <h2>What do you need?</h2>
+
             <p>
               Describe the product or service you're looking to source.
             </p>
@@ -114,6 +128,7 @@ function Procurements() {
         <div className="section-heading">
           <div>
             <h2>Recent procurements</h2>
+
             <p>
               Your procurement requests and their current status.
             </p>
@@ -122,6 +137,7 @@ function Procurements() {
           {procurements.length > 0 && (
             <div className="search-box">
               <Search size={17} />
+
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
@@ -159,6 +175,7 @@ function Procurements() {
               >
                 <div>
                   <h3>{procurement.title}</h3>
+
                   <p>{procurement.originalRequest}</p>
                 </div>
 
