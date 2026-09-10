@@ -1,4 +1,5 @@
 from app.services.procurement import (
+    approve_procurement,
     create_procurement,
     delete_procurement,
     get_procurement,
@@ -14,6 +15,7 @@ from app.services.requirement import (
 )
 
 __all__ = [
+    "approve_procurement",
     "create_procurement",
     "delete_procurement",
     "get_procurement",

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.dependencies import get_database
 from app.schemas import ProcurementCreate, ProcurementResponse, ProcurementUpdate
 from app.services import (
+    approve_procurement,
     create_procurement,
     delete_procurement,
     get_procurement,
@@ -135,3 +136,36 @@ def delete(
         db=db,
         procurement=procurement,
     )
+
+
+@router.post(
+    "/{procurement_id}/approve",
+    response_model=ProcurementResponse,
+)
+def approve(
+    procurement_id: UUID,
+    organization_id: UUID,
+    db: Session = Depends(get_database),
+):
+    procurement = get_procurement(
+        db=db,
+        organization_id=organization_id,
+        procurement_id=procurement_id,
+    )
+
+    if procurement is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Procurement not found",
+        )
+
+    try:
+        return approve_procurement(
+            db=db,
+            procurement=procurement,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc

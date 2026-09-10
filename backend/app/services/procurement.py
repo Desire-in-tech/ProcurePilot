@@ -1,9 +1,11 @@
 from uuid import UUID
 
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Organization, Procurement
+from app.models import Organization, Procurement, Requirement
 from app.schemas import ProcurementCreate, ProcurementUpdate
 
 
@@ -65,6 +67,35 @@ def update_procurement(
 
     for field, value in updates.items():
         setattr(procurement, field, value)
+
+    db.commit()
+    db.refresh(procurement)
+
+    return procurement
+
+
+def approve_procurement(
+    db: Session,
+    procurement: Procurement,
+) -> Procurement:
+    if procurement.status != "review":
+        raise ValueError(
+            "Only procurements in review status can be approved"
+        )
+
+    requirement_exists = db.scalar(
+        select(Requirement.id)
+        .where(Requirement.procurement_id == procurement.id)
+        .limit(1)
+    )
+
+    if requirement_exists is None:
+        raise ValueError(
+            "Procurement must have at least one requirement before approval"
+        )
+
+    procurement.status = "approved"
+    procurement.approved_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(procurement)
