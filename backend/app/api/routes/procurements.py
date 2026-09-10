@@ -3,7 +3,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_database
+from app.dependencies import get_current_user, get_database, require_admin
+from app.models import User
 from app.schemas import ProcurementCreate, ProcurementResponse, ProcurementUpdate
 from app.services import (
     approve_procurement,
@@ -28,13 +29,13 @@ router = APIRouter(
 )
 def create(
     data: ProcurementCreate,
-    organization_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_database),
 ):
     try:
         return create_procurement(
             db=db,
-            organization_id=organization_id,
+            organization_id=current_user.organization_id,
             data=data,
         )
     except ValueError as exc:
@@ -49,12 +50,12 @@ def create(
     response_model=list[ProcurementResponse],
 )
 def list_all(
-    organization_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_database),
 ):
     return list_procurements(
         db=db,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
     )
 
 
@@ -64,12 +65,12 @@ def list_all(
 )
 def get_one(
     procurement_id: UUID,
-    organization_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_database),
 ):
     procurement = get_procurement(
         db=db,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         procurement_id=procurement_id,
     )
 
@@ -89,12 +90,12 @@ def get_one(
 def update(
     procurement_id: UUID,
     data: ProcurementUpdate,
-    organization_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_database),
 ):
     procurement = get_procurement(
         db=db,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         procurement_id=procurement_id,
     )
 
@@ -117,12 +118,12 @@ def update(
 )
 def delete(
     procurement_id: UUID,
-    organization_id: UUID,
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_database),
 ):
     procurement = get_procurement(
         db=db,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         procurement_id=procurement_id,
     )
 
@@ -144,12 +145,12 @@ def delete(
 )
 def approve(
     procurement_id: UUID,
-    organization_id: UUID,
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_database),
 ):
     procurement = get_procurement(
         db=db,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         procurement_id=procurement_id,
     )
 

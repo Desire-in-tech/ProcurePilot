@@ -3,9 +3,10 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
+from app.core.security import create_access_token, hash_password
 from app.db.database import SessionLocal
 from app.main import app
-from app.models import Organization
+from app.models import Organization, User
 
 
 client = TestClient(app)
@@ -18,11 +19,34 @@ def create_organization(name: str) -> uuid.UUID:
         organization = Organization(
             id=organization_id,
             name=name,
+            slug=f"test-{uuid.uuid4().hex[:12]}",
         )
         db.add(organization)
         db.commit()
 
     return organization_id
+
+
+def create_user(organization_id: uuid.UUID) -> str:
+    user_id = uuid.uuid4()
+
+    with SessionLocal() as db:
+        user = User(
+            id=user_id,
+            organization_id=organization_id,
+            name="Test User",
+            email=f"{user_id.hex[:12]}@example.com",
+            password_hash=hash_password("TestPassword123!"),
+            role="admin",
+        )
+        db.add(user)
+        db.commit()
+
+    return create_access_token(
+        subject=str(user_id),
+        organization_id=str(organization_id),
+        role="admin",
+    )
 
 
 def delete_organization(organization_id: uuid.UUID) -> None:
@@ -36,11 +60,12 @@ def delete_organization(organization_id: uuid.UUID) -> None:
 
 def create_procurement(
     organization_id: uuid.UUID,
+    token: str,
     title: str = "Approval Test Procurement",
 ) -> str:
     response = client.post(
         "/api/v1/procurements",
-        params={"organization_id": str(organization_id)},
+        headers={"Authorization": f"Bearer {token}"},
         json={
             "title": title,
             "description": "Procurement used to test approval rules.",
@@ -55,10 +80,11 @@ def create_procurement(
 def add_requirement(
     organization_id: uuid.UUID,
     procurement_id: str,
+    token: str,
 ) -> None:
     response = client.post(
         f"/api/v1/procurements/{procurement_id}/requirements",
-        params={"organization_id": str(organization_id)},
+        headers={"Authorization": f"Bearer {token}"},
         json={
             "name": "Required item",
             "description": "A required procurement item.",
@@ -89,13 +115,14 @@ def move_to_review(
 
 def test_draft_procurement_cannot_be_approved():
     organization_id = create_organization("Approval Draft Test")
+    token = create_user(organization_id)
 
     try:
-        procurement_id = create_procurement(organization_id)
+        procurement_id = create_procurement(organization_id, token)
 
         response = client.post(
             f"/api/v1/procurements/{procurement_id}/approve",
-            params={"organization_id": str(organization_id)},
+            headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 400
@@ -109,14 +136,15 @@ def test_draft_procurement_cannot_be_approved():
 
 def test_review_procurement_requires_requirement_before_approval():
     organization_id = create_organization("Approval Requirement Test")
+    token = create_user(organization_id)
 
     try:
-        procurement_id = create_procurement(organization_id)
+        procurement_id = create_procurement(organization_id, token)
         move_to_review(organization_id, procurement_id)
 
         response = client.post(
             f"/api/v1/procurements/{procurement_id}/approve",
-            params={"organization_id": str(organization_id)},
+            headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 400
@@ -131,17 +159,18 @@ def test_review_procurement_requires_requirement_before_approval():
 
 def test_review_procurement_with_requirement_can_be_approved():
     organization_id = create_organization("Approval Success Test")
+    token = create_user(organization_id)
 
     try:
-        procurement_id = create_procurement(organization_id)
-        add_requirement(organization_id, procurement_id)
+        procurement_id = create_procurement(organization_id, token)
+        add_requirement(organization_id, procurement_id, token)
         move_to_review(organization_id, procurement_id)
 
         before = datetime.now(timezone.utc)
 
         response = client.post(
             f"/api/v1/procurements/{procurement_id}/approve",
-            params={"organization_id": str(organization_id)},
+            headers={"Authorization": f"Bearer {token}"},
         )
 
         after = datetime.now(timezone.utc)
@@ -166,22 +195,23 @@ def test_review_procurement_with_requirement_can_be_approved():
 
 def test_approved_procurement_cannot_be_approved_again():
     organization_id = create_organization("Approval Repeat Test")
+    token = create_user(organization_id)
 
     try:
-        procurement_id = create_procurement(organization_id)
-        add_requirement(organization_id, procurement_id)
+        procurement_id = create_procurement(organization_id, token)
+        add_requirement(organization_id, procurement_id, token)
         move_to_review(organization_id, procurement_id)
 
         response = client.post(
             f"/api/v1/procurements/{procurement_id}/approve",
-            params={"organization_id": str(organization_id)},
+            headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 200
 
         response = client.post(
             f"/api/v1/procurements/{procurement_id}/approve",
-            params={"organization_id": str(organization_id)},
+            headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 400
@@ -196,15 +226,17 @@ def test_approved_procurement_cannot_be_approved_again():
 def test_wrong_organization_cannot_approve_procurement():
     organization_a = create_organization("Approval Organization A")
     organization_b = create_organization("Approval Organization B")
+    token_a = create_user(organization_a)
+    token_b = create_user(organization_b)
 
     try:
-        procurement_id = create_procurement(organization_a)
-        add_requirement(organization_a, procurement_id)
+        procurement_id = create_procurement(organization_a, token_a)
+        add_requirement(organization_a, procurement_id, token_a)
         move_to_review(organization_a, procurement_id)
 
         response = client.post(
             f"/api/v1/procurements/{procurement_id}/approve",
-            params={"organization_id": str(organization_b)},
+            headers={"Authorization": f"Bearer {token_b}"},
         )
 
         assert response.status_code == 404
@@ -213,3 +245,54 @@ def test_wrong_organization_cannot_approve_procurement():
     finally:
         delete_organization(organization_a)
         delete_organization(organization_b)
+
+
+def create_member_user(organization_id: uuid.UUID) -> str:
+    user_id = uuid.uuid4()
+
+    with SessionLocal() as db:
+        user = User(
+            id=user_id,
+            organization_id=organization_id,
+            name="Test Member",
+            email=f"{user_id.hex[:12]}@example.com",
+            password_hash=hash_password("TestPassword123!"),
+            role="member",
+        )
+        db.add(user)
+        db.commit()
+
+    return create_access_token(
+        subject=str(user_id),
+        organization_id=str(organization_id),
+        role="member",
+    )
+
+
+def test_member_cannot_approve_procurement():
+    organization_id = create_organization("Member Approval Test")
+    admin_token = create_user(organization_id)
+    member_token = create_member_user(organization_id)
+
+    try:
+        procurement_id = create_procurement(
+            organization_id,
+            admin_token,
+        )
+        add_requirement(
+            organization_id,
+            procurement_id,
+            admin_token,
+        )
+        move_to_review(organization_id, procurement_id)
+
+        response = client.post(
+            f"/api/v1/procurements/{procurement_id}/approve",
+            headers={"Authorization": f"Bearer {member_token}"},
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Admin access required"
+
+    finally:
+        delete_organization(organization_id)

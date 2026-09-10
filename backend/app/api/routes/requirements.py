@@ -3,7 +3,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_database
+from app.dependencies import get_current_user, get_database
+from app.models import User
 from app.schemas import (
     RequirementCreate,
     RequirementResponse,
@@ -32,13 +33,13 @@ router = APIRouter(
 def create(
     procurement_id: UUID,
     data: RequirementCreate,
-    organization_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_database),
 ):
     try:
         return create_requirement(
             db=db,
-            organization_id=organization_id,
+            organization_id=current_user.organization_id,
             procurement_id=procurement_id,
             data=data,
         )
@@ -55,13 +56,13 @@ def create(
 )
 def list_all(
     procurement_id: UUID,
-    organization_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_database),
 ):
     try:
         return list_requirements(
             db=db,
-            organization_id=organization_id,
+            organization_id=current_user.organization_id,
             procurement_id=procurement_id,
         )
     except ValueError as exc:
@@ -78,12 +79,12 @@ def list_all(
 def get_one(
     procurement_id: UUID,
     requirement_id: UUID,
-    organization_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_database),
 ):
     requirement = get_requirement(
         db=db,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         procurement_id=procurement_id,
         requirement_id=requirement_id,
     )
@@ -105,12 +106,12 @@ def update(
     procurement_id: UUID,
     requirement_id: UUID,
     data: RequirementUpdate,
-    organization_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_database),
 ):
     requirement = get_requirement(
         db=db,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         procurement_id=procurement_id,
         requirement_id=requirement_id,
     )
@@ -135,12 +136,12 @@ def update(
 def delete(
     procurement_id: UUID,
     requirement_id: UUID,
-    organization_id: UUID,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_database),
 ):
     requirement = get_requirement(
         db=db,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         procurement_id=procurement_id,
         requirement_id=requirement_id,
     )

@@ -3,20 +3,45 @@ import uuid
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
+from app.core.security import create_access_token, hash_password
 from app.db.database import SessionLocal
 from app.main import app
-from app.models import Organization, Procurement, Requirement
+from app.models import Organization, Procurement, Requirement, User
 
 
 client = TestClient(app)
 
 
 def create_organization(db, name: str) -> Organization:
-    organization = Organization(name=name)
+    organization = Organization(
+        name=name,
+        slug=f"test-{uuid.uuid4().hex[:12]}",
+    )
     db.add(organization)
     db.commit()
     db.refresh(organization)
     return organization
+
+
+def create_user(db, organization_id: uuid.UUID) -> str:
+    user_id = uuid.uuid4()
+
+    user = User(
+        id=user_id,
+        organization_id=organization_id,
+        name="Test User",
+        email=f"{user_id.hex[:12]}@example.com",
+        password_hash=hash_password("TestPassword123!"),
+        role="admin",
+    )
+    db.add(user)
+    db.commit()
+
+    return create_access_token(
+        subject=str(user_id),
+        organization_id=str(organization_id),
+        role="admin",
+    )
 
 
 def create_procurement(
@@ -56,6 +81,8 @@ def test_requirement_crud_and_tenant_isolation():
     try:
         organization_a = create_organization(db, "Requirement Test Org A")
         organization_b = create_organization(db, "Requirement Test Org B")
+        token_a = create_user(db, organization_a.id)
+        token_b = create_user(db, organization_b.id)
 
         procurement = create_procurement(
             db,
@@ -69,7 +96,7 @@ def test_requirement_crud_and_tenant_isolation():
         # Create
         response = client.post(
             base_url,
-            params={"organization_id": str(organization_a.id)},
+            headers={"Authorization": f"Bearer {token_a}"},
             json={
                 "name": "Laptop",
                 "description": "Business laptop",
@@ -94,7 +121,7 @@ def test_requirement_crud_and_tenant_isolation():
         # List
         response = client.get(
             base_url,
-            params={"organization_id": str(organization_a.id)},
+            headers={"Authorization": f"Bearer {token_a}"},
         )
 
         assert response.status_code == 200
@@ -104,7 +131,7 @@ def test_requirement_crud_and_tenant_isolation():
         # Retrieve
         response = client.get(
             f"{base_url}/{requirement_id}",
-            params={"organization_id": str(organization_a.id)},
+            headers={"Authorization": f"Bearer {token_a}"},
         )
 
         assert response.status_code == 200
@@ -113,7 +140,7 @@ def test_requirement_crud_and_tenant_isolation():
         # Update
         response = client.patch(
             f"{base_url}/{requirement_id}",
-            params={"organization_id": str(organization_a.id)},
+            headers={"Authorization": f"Bearer {token_a}"},
             json={
                 "name": "Business Laptop",
                 "value": "32GB RAM",
@@ -127,7 +154,7 @@ def test_requirement_crud_and_tenant_isolation():
         # Cross-organization retrieve must fail
         response = client.get(
             f"{base_url}/{requirement_id}",
-            params={"organization_id": str(organization_b.id)},
+            headers={"Authorization": f"Bearer {token_b}"},
         )
 
         assert response.status_code == 404
@@ -135,7 +162,7 @@ def test_requirement_crud_and_tenant_isolation():
         # Cross-organization update must fail
         response = client.patch(
             f"{base_url}/{requirement_id}",
-            params={"organization_id": str(organization_b.id)},
+            headers={"Authorization": f"Bearer {token_b}"},
             json={"name": "Unauthorized Change"},
         )
 
@@ -144,7 +171,7 @@ def test_requirement_crud_and_tenant_isolation():
         # Cross-organization delete must fail
         response = client.delete(
             f"{base_url}/{requirement_id}",
-            params={"organization_id": str(organization_b.id)},
+            headers={"Authorization": f"Bearer {token_b}"},
         )
 
         assert response.status_code == 404
@@ -152,7 +179,7 @@ def test_requirement_crud_and_tenant_isolation():
         # Correct organization can delete
         response = client.delete(
             f"{base_url}/{requirement_id}",
-            params={"organization_id": str(organization_a.id)},
+            headers={"Authorization": f"Bearer {token_a}"},
         )
 
         assert response.status_code == 204
@@ -160,7 +187,7 @@ def test_requirement_crud_and_tenant_isolation():
         # Deleted requirement must no longer exist
         response = client.get(
             f"{base_url}/{requirement_id}",
-            params={"organization_id": str(organization_a.id)},
+            headers={"Authorization": f"Bearer {token_a}"},
         )
 
         assert response.status_code == 404
@@ -187,12 +214,13 @@ def test_requirement_requires_existing_procurement():
             db,
             "Missing Procurement Test Org",
         )
+        token = create_user(db, organization.id)
 
         missing_procurement_id = uuid.uuid4()
 
         response = client.post(
             f"/api/v1/procurements/{missing_procurement_id}/requirements",
-            params={"organization_id": str(organization.id)},
+            headers={"Authorization": f"Bearer {token}"},
             json={
                 "name": "Laptop",
                 "is_mandatory": True,
@@ -218,6 +246,7 @@ def test_requirement_cannot_be_accessed_through_wrong_procurement():
             db,
             "Wrong Procurement Test Org",
         )
+        token = create_user(db, organization.id)
 
         procurement_a = create_procurement(
             db,
@@ -237,7 +266,7 @@ def test_requirement_cannot_be_accessed_through_wrong_procurement():
 
         response = client.post(
             create_url,
-            params={"organization_id": str(organization.id)},
+            headers={"Authorization": f"Bearer {token}"},
             json={
                 "name": "Laptop",
                 "is_mandatory": True,
@@ -254,7 +283,7 @@ def test_requirement_cannot_be_accessed_through_wrong_procurement():
 
         response = client.get(
             wrong_procurement_url,
-            params={"organization_id": str(organization.id)},
+            headers={"Authorization": f"Bearer {token}"},
         )
 
         assert response.status_code == 404
