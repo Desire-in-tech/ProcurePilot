@@ -86,6 +86,16 @@ class Procurement(Base):
         cascade="all, delete-orphan",
     )
 
+    research_runs: Mapped[list["ResearchRun"]] = relationship(
+        back_populates="procurement",
+        cascade="all, delete-orphan",
+    )
+
+    supplier_offers: Mapped[list["SupplierOffer"]] = relationship(
+        back_populates="procurement",
+        cascade="all, delete-orphan",
+    )
+
 
 class Requirement(Base):
     __tablename__ = "requirements"
