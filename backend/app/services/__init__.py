@@ -1,3 +1,9 @@
+from app.services.auth import (
+    authenticate_user,
+    create_user_access_token,
+    normalize_email,
+    register_user,
+)
 from app.services.procurement import (
     approve_procurement,
     create_procurement,
@@ -15,6 +21,10 @@ from app.services.requirement import (
 )
 
 __all__ = [
+    "authenticate_user",
+    "create_user_access_token",
+    "normalize_email",
+    "register_user",
     "approve_procurement",
     "create_procurement",
     "delete_procurement",

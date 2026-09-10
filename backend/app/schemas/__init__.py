@@ -1,3 +1,9 @@
+from app.schemas.auth import (
+    LoginRequest,
+    RegisterRequest,
+    TokenResponse,
+    UserResponse,
+)
 from app.schemas.procurement import (
     ProcurementCreate,
     ProcurementResponse,
@@ -10,6 +16,10 @@ from app.schemas.requirement import (
 )
 
 __all__ = [
+    "LoginRequest",
+    "RegisterRequest",
+    "TokenResponse",
+    "UserResponse",
     "ProcurementCreate",
     "ProcurementResponse",
     "ProcurementUpdate",
