@@ -20,6 +20,7 @@ __all__ = [
     "RegisterRequest",
     "TokenResponse",
     "UserResponse",
+    "ManagedUserResponse",
     "ProcurementCreate",
     "ProcurementResponse",
     "ProcurementUpdate",
@@ -27,3 +28,5 @@ __all__ = [
     "RequirementResponse",
     "RequirementUpdate",
 ]
+
+from app.schemas.user import ManagedUserResponse, UserCreate
