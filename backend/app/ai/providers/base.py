@@ -75,3 +75,9 @@ class ResearchProvider(Protocol):
         external_job_id: str,
     ) -> ResearchJob:
         ...
+
+    async def get_scrape_job(
+        self,
+        external_job_id: str,
+    ) -> ScrapeResult:
+        ...

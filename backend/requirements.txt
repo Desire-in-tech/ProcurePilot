@@ -32,3 +32,7 @@ uvicorn==0.52.4
 uvloop==0.22.1
 watchfiles==1.2.0
 websockets==17.1
+PyJWT
+pwdlib[argon2]
+email-validator
+pytest-asyncio

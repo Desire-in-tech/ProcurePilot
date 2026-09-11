@@ -40,3 +40,9 @@ __all__ = [
 
 
 from app.services.user import create_member, list_users
+
+from app.services.research import (
+    build_search_query,
+    create_research_run,
+    execute_supplier_search,
+)

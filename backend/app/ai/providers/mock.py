@@ -78,3 +78,18 @@ class MockResearchProvider:
             status="completed",
             result={},
         )
+
+    async def get_scrape_job(
+        self,
+        external_job_id: str,
+    ) -> ScrapeResult:
+        return ScrapeResult(
+            url="https://example.com/supplier",
+            title="Mock Source",
+            content="Mock scraped content.",
+            structured_data={},
+            metadata={
+                "job_id": external_job_id,
+                "status": "completed",
+            },
+        )
