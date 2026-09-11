@@ -201,3 +201,89 @@ async def execute_supplier_search(
         db.commit()
 
         raise
+
+
+async def collect_source_content(
+    db: Session,
+    run: ResearchRun,
+    provider: ResearchProvider,
+    sources: list[ResearchSource],
+) -> list[ResearchSource]:
+    """
+    Scrape discovered research sources and persist their content.
+
+    Providers may return completed content immediately (as the mock provider
+    does) or return an external asynchronous scraping job that must be polled.
+    """
+    if not sources:
+        return []
+
+    task = ResearchTask(
+        research_run_id=run.id,
+        task_type=ResearchTaskType.SCRAPE_SOURCE.value,
+        status=ResearchTaskStatus.RUNNING.value,
+        provider=getattr(provider, "name", None),
+        input_data={
+            "source_count": len(sources),
+            "urls": [source.url for source in sources],
+        },
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    try:
+        collected_sources: list[ResearchSource] = []
+
+        for source in sources:
+            scrape_result = await provider.scrape(source.url)
+
+            job_id = scrape_result.metadata.get("job_id")
+
+            if job_id and not scrape_result.content:
+                task.external_job_id = job_id
+                db.commit()
+
+                scrape_result = await provider.get_scrape_job(job_id)
+
+            source.title = scrape_result.title or source.title
+            source.raw_content = scrape_result.content
+            source.source_type = "scraped"
+
+            existing_metadata = source.metadata_json or {}
+            scrape_metadata = scrape_result.metadata or {}
+
+            source.metadata_json = {
+                **existing_metadata,
+                **scrape_metadata,
+            }
+
+            collected_sources.append(source)
+
+        task.status = ResearchTaskStatus.COMPLETED.value
+        task.output_data = {
+            "source_count": len(collected_sources),
+            "urls": [source.url for source in collected_sources],
+        }
+        task.completed_at = datetime.now(timezone.utc)
+
+        db.commit()
+
+        for source in collected_sources:
+            db.refresh(source)
+
+        return collected_sources
+
+    except Exception as exc:
+        db.rollback()
+
+        failed_task = db.get(ResearchTask, task.id)
+
+        if failed_task is not None:
+            failed_task.status = ResearchTaskStatus.FAILED.value
+            failed_task.error = str(exc)
+            failed_task.completed_at = datetime.now(timezone.utc)
+
+        db.commit()
+        raise

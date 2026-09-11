@@ -213,3 +213,63 @@ async def test_supplier_search_failure_persists_failed_run_and_task():
             cleanup(db, organization.id)
 
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_collect_source_content_persists_scraped_content():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization = create_organization(db)
+        procurement = create_procurement(db, organization.id)
+
+        run = create_research_run(
+            db,
+            procurement.id,
+        )
+
+        sources = await execute_supplier_search(
+            db,
+            run,
+            SuccessfulProvider(),
+        )
+
+        from app.ai.providers import MockResearchProvider
+        from app.services.research import collect_source_content
+
+        collected = await collect_source_content(
+            db,
+            run,
+            MockResearchProvider(),
+            sources,
+        )
+
+        assert len(collected) == 2
+
+        for source in collected:
+            assert source.raw_content == "Mock scraped content."
+            assert source.source_type == "scraped"
+
+        tasks = (
+            db.query(ResearchTask)
+            .filter(ResearchTask.research_run_id == run.id)
+            .all()
+        )
+
+        assert len(tasks) == 2
+
+        scrape_task = next(
+            task
+            for task in tasks
+            if task.task_type == "scrape_source"
+        )
+
+        assert scrape_task.status == "completed"
+        assert scrape_task.output_data["source_count"] == 2
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
