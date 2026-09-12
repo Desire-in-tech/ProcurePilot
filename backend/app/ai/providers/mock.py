@@ -44,11 +44,32 @@ class MockResearchProvider:
         schema: dict[str, Any] | None = None,
         use_browser: bool = False,
     ) -> ScrapeResult:
+        structured_data = {}
+
+        if schema is not None and "offers" in schema.get("properties", {}):
+            structured_data = {
+                "offers": [
+                    {
+                        "supplier_name": "Nordic Tech Supply",
+                        "product_name": "Business Laptop Pro 14",
+                        "model": "BLP14",
+                        "price": 1180,
+                        "currency": "EUR",
+                        "availability": "In stock",
+                        "warranty": "3 years",
+                        "specifications": {
+                            "ram": "16GB",
+                            "storage": "512GB SSD",
+                        },
+                    }
+                ]
+            }
+
         return ScrapeResult(
             url=url,
             title="Mock Source",
             content="Mock scraped content.",
-            structured_data={},
+            structured_data=structured_data,
         )
 
     async def batch_scrape(

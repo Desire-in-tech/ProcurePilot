@@ -39,6 +39,7 @@ class ResearchTaskType(str, Enum):
     SEARCH_SUPPLIERS = "search_suppliers"
     SEARCH_PRODUCTS = "search_products"
     SCRAPE_SOURCE = "scrape_source"
+    EXTRACT_OFFERS = "extract_offers"
     VERIFY_OFFER = "verify_offer"
     COMPARE_OFFERS = "compare_offers"
     GENERATE_RECOMMENDATION = "generate_recommendation"

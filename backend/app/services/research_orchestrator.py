@@ -10,6 +10,10 @@ from app.research.states import (
     ResearchRunStatus,
     validate_transition,
 )
+from app.services.offer_extraction import extract_offers_from_sources
+from app.services.offer_comparison import compare_offers
+from app.services.recommendation import generate_recommendation
+from app.services.requirement_verification import verify_offers
 from app.services.research import (
     collect_source_content,
     create_research_run,
@@ -33,9 +37,9 @@ async def start_research(
     """
     Start the autonomous research workflow for an approved procurement.
 
-    This orchestration slice performs supplier discovery and source
-    collection. Later stages will add extraction, verification,
-    comparison, and recommendation generation.
+    This orchestration slice performs supplier discovery, source
+    collection, offer extraction, requirement verification, deterministic
+    offer comparison, and recommendation generation.
     """
     procurement = db.scalar(
         select(Procurement).where(Procurement.id == procurement_id)
@@ -81,6 +85,29 @@ async def start_research(
         run,
         provider,
         sources,
+    )
+
+    await extract_offers_from_sources(
+        db,
+        run,
+        provider,
+        collected_sources,
+    )
+
+    await verify_offers(
+        db,
+        run,
+    )
+
+    comparisons = await compare_offers(
+        db,
+        run,
+    )
+
+    await generate_recommendation(
+        db,
+        run,
+        comparisons,
     )
 
     return run, collected_sources
