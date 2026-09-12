@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -146,12 +148,30 @@ async def test_get_agentic_job_returns_completed_result():
 
 
 @pytest.mark.asyncio
-async def test_scrape_submits_url_scraper_job():
+async def test_scrape_submits_url_scraper_job_with_output_schema():
+    schema = {
+        "type": "object",
+        "properties": {
+            "supplier_name": {"type": "string"},
+            "price": {"type": ["number", "null"]},
+        },
+    }
+
     async def handler(request: httpx.Request):
         assert request.method == "POST"
         assert str(request.url) == (
             "https://api.anakin.io/v1/url-scraper"
         )
+
+        payload = json.loads(request.content)
+
+        assert payload["url"] == (
+            "https://supplier.example.com/product"
+        )
+        assert payload["useBrowser"] is True
+        assert payload["generateJson"] is True
+        assert payload["outputSchema"] == schema
+        assert "jsonSchema" not in payload
 
         return httpx.Response(
             202,
@@ -174,6 +194,7 @@ async def test_scrape_submits_url_scraper_job():
     try:
         result = await provider.scrape(
             "https://supplier.example.com/product",
+            schema=schema,
             use_browser=True,
         )
     finally:
@@ -229,6 +250,55 @@ async def test_get_scrape_job_returns_scraped_content():
     assert result.content == "# Business Laptop Pro\n\n16GB RAM."
     assert result.structured_data["price"] == 1180
     assert result.structured_data["currency"] == "EUR"
+
+
+@pytest.mark.asyncio
+async def test_get_scrape_job_preserves_structured_generated_json():
+    expected = {
+        "supplier_name": "Nordic Tech Supply",
+        "product_name": "Business Laptop Pro 14",
+        "price": 1180,
+        "currency": "EUR",
+    }
+
+    async def handler(request: httpx.Request):
+        assert request.method == "GET"
+        assert str(request.url) == (
+            "https://api.anakin.io/v1/url-scraper/scrape-structured"
+        )
+
+        return httpx.Response(
+            200,
+            json={
+                "id": "scrape-structured",
+                "status": "completed",
+                "url": "https://supplier.example.com/product",
+                "title": "Business Laptop Pro 14",
+                "markdown": "# Business Laptop Pro 14",
+                "generatedJson": expected,
+            },
+        )
+
+    provider = AnakinProvider("test-key")
+
+    original_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = make_transport(handler)
+        return original_client(*args, **kwargs)
+
+    httpx.AsyncClient = client_factory
+
+    try:
+        result = await provider.get_scrape_job("scrape-structured")
+    finally:
+        httpx.AsyncClient = original_client
+
+    assert result.structured_data == expected
+    assert result.structured_data["supplier_name"] == (
+        "Nordic Tech Supply"
+    )
+    assert result.structured_data["price"] == 1180
 
 
 @pytest.mark.asyncio

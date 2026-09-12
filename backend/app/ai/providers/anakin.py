@@ -169,7 +169,7 @@ class AnakinProvider:
 
         if schema is not None:
             payload["generateJson"] = True
-            payload["jsonSchema"] = schema
+            payload["outputSchema"] = schema
 
         async with httpx.AsyncClient(
             base_url=self.base_url,
@@ -230,7 +230,7 @@ class AnakinProvider:
 
         if schema is not None:
             payload["generateJson"] = True
-            payload["jsonSchema"] = schema
+            payload["outputSchema"] = schema
 
         async with httpx.AsyncClient(
             base_url=self.base_url,
