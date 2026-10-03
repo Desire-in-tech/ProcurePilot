@@ -198,6 +198,9 @@ async def extract_offers_from_sources(
             if job_id and not structured_data:
                 scrape_result = await provider.get_scrape_job(job_id)
 
+                if scrape_result.metadata.get("status") != "completed":
+                    raise RuntimeError("Scrape job is not completed")
+
                 structured_data = scrape_result.structured_data
 
                 if scrape_result.title:

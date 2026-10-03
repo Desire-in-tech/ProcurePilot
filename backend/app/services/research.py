@@ -247,6 +247,9 @@ async def collect_source_content(
 
                 scrape_result = await provider.get_scrape_job(job_id)
 
+                if scrape_result.metadata.get("status") != "completed":
+                    raise RuntimeError("Scrape job is not completed")
+
             source.title = scrape_result.title or source.title
             source.raw_content = scrape_result.content
             source.source_type = "scraped"

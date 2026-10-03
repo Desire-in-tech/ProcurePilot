@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -27,6 +28,67 @@ ACTIVE_RUN_STATUSES = {
     ResearchRunStatus.EXECUTING.value,
     ResearchRunStatus.EVALUATING.value,
 }
+
+_OPEN_RUN_STATUSES = {
+    ResearchRunStatus.EXECUTING.value,
+    ResearchRunStatus.EVALUATING.value,
+}
+
+
+def _fail_run_if_still_open(
+    db: Session,
+    run_id: UUID,
+    exc: Exception,
+) -> None:
+    """
+    Mark an in-progress run failed after a later stage raises.
+
+    Search already stores failed itself. Do not transition again in
+    that case. Roll back first so uncommitted stage writes are dropped.
+    """
+    db.rollback()
+
+    failed_run = db.get(ResearchRun, run_id)
+
+    if failed_run is None:
+        return
+
+    if failed_run.status not in _OPEN_RUN_STATUSES:
+        return
+
+    validate_transition(
+        failed_run.status,
+        ResearchRunStatus.FAILED.value,
+        RESEARCH_RUN_TRANSITIONS,
+    )
+    failed_run.status = ResearchRunStatus.FAILED.value
+    failed_run.error = str(exc)
+    failed_run.completed_at = datetime.now(timezone.utc)
+    db.commit()
+
+
+def _complete_run(
+    db: Session,
+    run: ResearchRun,
+) -> ResearchRun:
+    validate_transition(
+        run.status,
+        ResearchRunStatus.EVALUATING.value,
+        RESEARCH_RUN_TRANSITIONS,
+    )
+    run.status = ResearchRunStatus.EVALUATING.value
+
+    validate_transition(
+        run.status,
+        ResearchRunStatus.COMPLETED.value,
+        RESEARCH_RUN_TRANSITIONS,
+    )
+    run.status = ResearchRunStatus.COMPLETED.value
+    run.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(run)
+
+    return run
 
 
 async def start_research(
@@ -74,40 +136,46 @@ async def start_research(
     db.commit()
     db.refresh(run)
 
-    sources = await execute_supplier_search(
-        db,
-        run,
-        provider,
-    )
+    run_id = run.id
 
-    collected_sources = await collect_source_content(
-        db,
-        run,
-        provider,
-        sources,
-    )
+    try:
+        sources = await execute_supplier_search(
+            db,
+            run,
+            provider,
+        )
 
-    await extract_offers_from_sources(
-        db,
-        run,
-        provider,
-        collected_sources,
-    )
+        collected_sources = await collect_source_content(
+            db,
+            run,
+            provider,
+            sources,
+        )
 
-    await verify_offers(
-        db,
-        run,
-    )
+        await extract_offers_from_sources(
+            db,
+            run,
+            provider,
+            collected_sources,
+        )
 
-    comparisons = await compare_offers(
-        db,
-        run,
-    )
+        await verify_offers(
+            db,
+            run,
+        )
 
-    await generate_recommendation(
-        db,
-        run,
-        comparisons,
-    )
+        comparisons = await compare_offers(
+            db,
+            run,
+        )
 
-    return run, collected_sources
+        await generate_recommendation(
+            db,
+            run,
+            comparisons,
+        )
+
+        return _complete_run(db, run), collected_sources
+    except Exception as exc:
+        _fail_run_if_still_open(db, run_id, exc)
+        raise
