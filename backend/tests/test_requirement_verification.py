@@ -311,3 +311,311 @@ async def test_verify_offer_marks_missing_evidence_for_review():
             cleanup(db, organization.id)
 
         db.close()
+
+
+async def verify_requirements(db, requirements, offers):
+    """
+    Create one procurement and verify the given offers.
+
+    No OfferEvidence rows are created. Requirement status does not
+    read those rows, so these cases do not depend on evidence keys.
+    """
+    organization = create_organization(db)
+    procurement = Procurement(
+        organization_id=organization.id,
+        title="Engineering Laptops",
+        description="Laptop procurement",
+        status="approved",
+    )
+    db.add(procurement)
+    db.commit()
+    db.refresh(procurement)
+
+    for requirement in requirements:
+        db.add(Requirement(procurement_id=procurement.id, **requirement))
+
+    run = ResearchRun(
+        procurement_id=procurement.id,
+        status="executing",
+    )
+    db.add(run)
+
+    for offer in offers:
+        db.add(
+            SupplierOffer(
+                procurement_id=procurement.id,
+                supplier_name=offer.get("supplier_name", "Supplier A"),
+                product_name=offer.get("product_name", "Laptop A"),
+                price=offer.get("price"),
+                currency=offer.get("currency"),
+                specifications=offer.get("specifications"),
+            )
+        )
+
+    db.commit()
+    verified = await verify_offers(db, run)
+    return organization, verified
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "name",
+        "value",
+        "unit",
+        "price",
+        "specifications",
+        "requirement_status",
+        "offer_status",
+    ),
+    [
+        (
+            "Budget",
+            "<= 1200",
+            "EUR",
+            Decimal("1500"),
+            None,
+            "not_met",
+            "not_eligible",
+        ),
+        (
+            "Budget",
+            "<= 1200",
+            "EUR",
+            Decimal("1100"),
+            None,
+            "met",
+            "eligible",
+        ),
+        (
+            "Budget",
+            "1200",
+            "EUR",
+            Decimal("1500"),
+            None,
+            "not_met",
+            "not_eligible",
+        ),
+        (
+            "Budget",
+            "1200",
+            "EUR",
+            Decimal("1100"),
+            None,
+            "met",
+            "eligible",
+        ),
+        (
+            "RAM",
+            ">= 16",
+            "GB",
+            None,
+            {"ram": "8GB"},
+            "not_met",
+            "not_eligible",
+        ),
+        (
+            "RAM",
+            ">= 16",
+            "GB",
+            None,
+            {"ram": "16GB"},
+            "met",
+            "eligible",
+        ),
+        (
+            "RAM",
+            ">= 16",
+            "GB",
+            None,
+            {"ram": "32GB"},
+            "met",
+            "eligible",
+        ),
+        (
+            "RAM",
+            "= 16",
+            "GB",
+            None,
+            {"ram": "16GB"},
+            "met",
+            "eligible",
+        ),
+        (
+            "RAM",
+            "= 16",
+            "GB",
+            None,
+            {"ram": "32GB"},
+            "not_met",
+            "not_eligible",
+        ),
+        (
+            "RAM",
+            "16GB",
+            "GB",
+            None,
+            {"ram": "32GB"},
+            "met",
+            "eligible",
+        ),
+        (
+            "Weight",
+            "2",
+            "kg",
+            None,
+            {"weight": "5"},
+            "unknown",
+            "needs_review",
+        ),
+        (
+            "Weight",
+            "<= 2",
+            "kg",
+            None,
+            {"weight": "5"},
+            "not_met",
+            "not_eligible",
+        ),
+        (
+            "Battery life",
+            "10",
+            "hours",
+            None,
+            {"battery life": "12 hours"},
+            "unknown",
+            "needs_review",
+        ),
+    ],
+)
+async def test_operator_and_price_comparisons(
+    name,
+    value,
+    unit,
+    price,
+    specifications,
+    requirement_status,
+    offer_status,
+):
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": name,
+                    "value": value,
+                    "unit": unit,
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "price": price,
+                    "currency": "EUR" if price is not None else None,
+                    "specifications": specifications,
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+        requirement_result = result["requirements"][0]
+
+        assert requirement_result["status"] == requirement_status
+        assert result["status"] == offer_status
+
+        if value == "<= 1200" and price == Decimal("1500"):
+            assert requirement_result["reason"] == (
+                "Supplier price exceeds the maximum allowed price."
+            )
+
+        if value == "<= 2" and name == "Weight":
+            assert requirement_result["reason"] == (
+                "Supplier value exceeds the maximum allowed value."
+            )
+
+        if value == ">= 16" and requirement_status == "not_met":
+            assert requirement_result["reason"] == (
+                "Supplier value is below the required minimum."
+            )
+
+        if requirement_status == "unknown" and name in {"Weight", "Battery life"}:
+            assert requirement_result["reason"] == (
+                "Comparison is ambiguous because no operator was provided."
+            )
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_procurement_with_no_mandatory_requirements_is_eligible():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [],
+            [
+                {"supplier_name": "Supplier A", "product_name": "Laptop A"},
+                {"supplier_name": "Supplier B", "product_name": "Laptop B"},
+            ],
+        )
+
+        assert len(offers) == 2
+        assert all(
+            offer.matching_result["status"] == "eligible"
+            for offer in offers
+        )
+        assert all(
+            offer.matching_result["mandatory_requirements_total"] == 0
+            for offer in offers
+        )
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_price_currency_mismatch_is_unknown():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": "Budget",
+                    "value": "<= 1200",
+                    "unit": "EUR",
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "price": Decimal("1100"),
+                    "currency": "USD",
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "unknown"
+        assert result["status"] == "needs_review"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
