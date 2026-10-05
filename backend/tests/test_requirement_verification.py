@@ -13,7 +13,10 @@ from app.models import (
     ResearchSource,
     SupplierOffer,
 )
-from app.services.requirement_verification import verify_offers
+from app.services.requirement_verification import (
+    _containment_status,
+    verify_offers,
+)
 
 
 def create_organization(db):
@@ -346,8 +349,10 @@ async def verify_requirements(db, requirements, offers):
                 procurement_id=procurement.id,
                 supplier_name=offer.get("supplier_name", "Supplier A"),
                 product_name=offer.get("product_name", "Laptop A"),
+                model=offer.get("model"),
                 price=offer.get("price"),
                 currency=offer.get("currency"),
+                warranty=offer.get("warranty"),
                 specifications=offer.get("specifications"),
             )
         )
@@ -613,6 +618,532 @@ async def test_price_currency_mismatch_is_unknown():
 
         assert result["requirements"][0]["status"] == "unknown"
         assert result["status"] == "needs_review"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_substring_does_not_satisfy_a_different_model():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": "SKU",
+                    "value": "12",
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "model": "X120",
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "unknown"
+        assert result["requirements"][0]["status"] != "met"
+        assert result["status"] == "needs_review"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_warranty_column_matches_the_same_duration():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": "Warranty",
+                    "value": "3 years",
+                    "unit": "years",
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "warranty": "3 years",
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "met"
+        assert result["requirements"][0]["actual"] == "3 years"
+        assert result["status"] == "eligible"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "warranty_text",
+    [
+        "no warranty",
+        "warranty not included",
+        "without warranty",
+        "warranty excluded",
+        "none",
+        "n/a",
+    ],
+)
+async def test_negated_warranty_does_not_satisfy_a_positive_claim(
+    warranty_text,
+):
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": "Warranty",
+                    "value": "warranty",
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "warranty": warranty_text,
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "not_met"
+        assert result["status"] == "not_eligible"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_unverifiable_warranty_text_is_unknown():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": "Warranty",
+                    "value": "warranty",
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "warranty": "warranty pending",
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "unknown"
+        assert result["status"] == "needs_review"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.parametrize(
+    ("expected_text", "actual_text"),
+    [
+        ("black", "black, no scratches"),
+        ("wifi 6", "wifi 6, no bluetooth"),
+        ("bluetooth", "bluetooth not required"),
+    ],
+)
+def test_post_match_negation_is_unknown(expected_text, actual_text):
+    status = _containment_status(expected_text, actual_text)
+
+    assert status == "unknown"
+    assert status != "met"
+    assert status != "not_met"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("specifications", "requirement_status", "offer_status", "actual"),
+    [
+        (
+            {"program": "8GB", "ram": "16GB"},
+            "met",
+            "eligible",
+            "16GB",
+        ),
+        (
+            {"ram": "16GB", "program": "8GB"},
+            "met",
+            "eligible",
+            "16GB",
+        ),
+        (
+            {"ram size": "16GB"},
+            "met",
+            "eligible",
+            "16GB",
+        ),
+        (
+            {"program": "8GB"},
+            "unknown",
+            "needs_review",
+            None,
+        ),
+    ],
+)
+async def test_exact_ram_key_wins_over_an_earlier_program_key(
+    specifications,
+    requirement_status,
+    offer_status,
+    actual,
+):
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": "RAM",
+                    "value": "16GB",
+                    "unit": "GB",
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "specifications": specifications,
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == requirement_status
+        assert result["requirements"][0]["actual"] == actual
+        assert result["status"] == offer_status
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_wifi_sentence_is_not_a_numeric_match():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": "WiFi",
+                    "value": "WiFi 6",
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "specifications": {
+                        "wifi": "WiFi 6, no bluetooth",
+                    },
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "unknown"
+        assert result["status"] == "needs_review"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_exact_wifi_text_is_met():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": "WiFi",
+                    "value": "WiFi 6",
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "specifications": {
+                        "wifi": "WiFi 6",
+                    },
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "met"
+        assert result["status"] == "eligible"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_different_cpu_model_is_unknown():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": "CPU",
+                    "value": "i7-1355U",
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "specifications": {
+                        "cpu": "i7-1165G7",
+                    },
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "unknown"
+        assert result["requirements"][0]["reason"] == (
+            "Supplier value could not be reliably compared."
+        )
+        assert result["status"] == "needs_review"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_exact_cpu_string_is_met():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": "CPU",
+                    "value": "i7-1355U",
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "specifications": {
+                        "cpu": "i7-1355U",
+                    },
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "met"
+        assert result["status"] == "eligible"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_chip_m2_against_usb_text_is_unknown():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": "Chip",
+                    "value": "M2",
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "specifications": {
+                        "chip": "USB 2, chip M1",
+                    },
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "unknown"
+        assert result["requirements"][0]["reason"] == (
+            "Supplier value could not be reliably compared."
+        )
+        assert result["status"] == "needs_review"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "value", "specifications"),
+    [
+        ("Screen", "14in", {"display": "14 inch"}),
+        ("Cores", "8 cores", {"cores": "8-core"}),
+        ("Ports", "3", {"ports": "2 x USB 3"}),
+    ],
+)
+async def test_ambiguous_non_trusted_numbers_are_unknown(
+    name,
+    value,
+    specifications,
+):
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": name,
+                    "value": value,
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "specifications": specifications,
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "unknown"
+        assert result["requirements"][0]["reason"] == (
+            "Supplier value could not be reliably compared."
+        )
+        assert result["status"] == "needs_review"
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "value", "unit", "specifications"),
+    [
+        ("RAM", ">= 16GB", "GB", {"ram": "32GB DDR5"}),
+        ("RAM", ">= 16GB", "GB", {"ram": "32GB, non-ECC"}),
+        (
+            "Storage",
+            ">= 512GB",
+            "GB",
+            {"storage": "1024GB PCIe 4.0 SSD"},
+        ),
+    ],
+)
+async def test_qualified_quantity_stays_a_minimum(
+    name,
+    value,
+    unit,
+    specifications,
+):
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization, offers = await verify_requirements(
+            db,
+            [
+                {
+                    "name": name,
+                    "value": value,
+                    "unit": unit,
+                    "is_mandatory": True,
+                }
+            ],
+            [
+                {
+                    "specifications": specifications,
+                }
+            ],
+        )
+
+        result = offers[0].matching_result
+
+        assert result["requirements"][0]["status"] == "met"
+        assert result["status"] == "eligible"
 
     finally:
         if organization is not None:

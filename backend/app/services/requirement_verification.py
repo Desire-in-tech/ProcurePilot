@@ -63,6 +63,80 @@ def _is_price_requirement(requirement: Requirement) -> bool:
     return bool(labels & _PRICE_REQUIREMENT_LABELS)
 
 
+_NEGATION_TOKENS = frozenset(
+    {"no", "not", "without", "non", "none", "na"}
+)
+_AMBIGUOUS_TOKENS = frozenset(
+    {"pending", "unknown", "unclear", "tbd", "maybe", "unspecified"}
+)
+
+
+def _mentions_warranty(requirement: Requirement, expected_text: str) -> bool:
+    return (
+        "warranty" in _normalise_text(requirement.name)
+        or "warranty" in _normalise_text(requirement.category)
+        or "warranty" in expected_text
+    )
+
+
+def _text_tokens(value: str) -> list[str]:
+    return re.findall(
+        r"[a-z0-9]+",
+        _normalise_text(value).replace("n/a", "na"),
+    )
+
+
+def _containment_status(expected_text: str, actual_text: str) -> str:
+    """
+    Judge a positive text claim.
+
+    not_met: the phrase is absent, a negation token is immediately
+    before it, or it is followed by "not included" or "excluded".
+    unknown: the phrase is present but not safely affirmative. A single
+    negation token immediately after the phrase is unknown, because
+    punctuation between clauses is lost during tokenizing.
+    met: the phrase is present and affirmative.
+    """
+    if not expected_text or expected_text not in actual_text:
+        return "not_met"
+
+    expected_tokens = _text_tokens(expected_text)
+    actual_tokens = _text_tokens(actual_text)
+
+    if not expected_tokens:
+        return "not_met"
+
+    width = len(expected_tokens)
+
+    for index in range(len(actual_tokens) - width + 1):
+        if actual_tokens[index:index + width] != expected_tokens:
+            continue
+
+        before = actual_tokens[index - 1] if index else None
+        after = actual_tokens[index + width:]
+
+        if before in _NEGATION_TOKENS:
+            return "not_met"
+
+        if after[:2] == ["not", "included"]:
+            return "not_met"
+
+        if after and after[0] == "excluded":
+            return "not_met"
+
+        if after and after[0] in _NEGATION_TOKENS:
+            return "unknown"
+
+        if before in _AMBIGUOUS_TOKENS or (
+            after and after[0] in _AMBIGUOUS_TOKENS
+        ):
+            return "unknown"
+
+        return "met"
+
+    return "unknown"
+
+
 def _uses_keyword_minimum(
     expected_text: str,
     specification_key: str | None,
@@ -174,20 +248,45 @@ def _find_specification(
             candidates.add(canonical)
             candidates.update(names)
 
-    for key, value in specifications.items():
-        normalised_key = _normalise_text(key)
+    items = [
+        (_normalise_text(key), value)
+        for key, value in specifications.items()
+    ]
 
-        if normalised_key in candidates:
-            return value, normalised_key
+    for key, value in items:
+        if key in candidates:
+            return value, key
 
-        if any(
-            candidate and (
-                candidate in normalised_key
-                or normalised_key in candidate
-            )
-            for candidate in candidates
-        ):
-            return value, normalised_key
+    def contains_sequence(haystack: list[str], needle: list[str]) -> bool:
+        width = len(needle)
+
+        if not needle or width > len(haystack):
+            return False
+
+        return any(
+            haystack[index:index + width] == needle
+            for index in range(len(haystack) - width + 1)
+        )
+
+    # Whole tokens only. "ram" is a token of "system ram" and of
+    # "ram size", and "battery" is a token of requirement "battery life".
+    # It is not a token of "program" or "framebuffer".
+    for key, value in items:
+        key_tokens = _text_tokens(key)
+
+        if not key_tokens:
+            continue
+
+        for candidate in candidates:
+            candidate_tokens = _text_tokens(candidate)
+
+            if not candidate_tokens:
+                continue
+
+            if contains_sequence(key_tokens, candidate_tokens) or (
+                contains_sequence(candidate_tokens, key_tokens)
+            ):
+                return value, key
 
     return None, None
 
@@ -314,22 +413,13 @@ def _evaluate_requirement(
         requirement,
     )
 
-    if actual is None:
-        combined_text = " ".join(
-            filter(
-                None,
-                [
-                    offer.product_name,
-                    offer.model,
-                    offer.availability,
-                    offer.warranty,
-                    str(offer.specifications or {}),
-                ],
-            )
-        )
+    warranty_column = False
 
-        if expected_text in _normalise_text(combined_text):
-            actual = expected
+    if actual is None and _mentions_warranty(requirement, expected_text):
+        if offer.warranty and str(offer.warranty).strip():
+            actual = offer.warranty
+            warranty_column = True
+            # Same lookup key the old fallback used: the requirement name.
             specification_key = requirement.name
 
     if actual is None:
@@ -346,54 +436,82 @@ def _evaluate_requirement(
     expected_number = _extract_number(expected)
     actual_number = _extract_number(actual)
 
-    if expected_number is not None and actual_number is not None:
+    # A unit is not an operator. Ram/memory, storage/ssd, and
+    # warranty stay minimums, including a qualified value such as
+    # "32GB DDR5". Prose under those keys can still match on its
+    # first number. Any other operator-less number that carries a
+    # unit is ambiguous. Outside those categories, and without an
+    # explicit operator, numbers are not compared.
+    if (
+        expected_number is not None
+        and actual_number is not None
+        and explicit_operator is None
+        and requirement.unit
+        and _normalise_text(requirement.unit)
+        and not _uses_keyword_minimum(expected_text, specification_key)
+    ):
+        evidence = _matching_evidence(
+            db,
+            offer,
+            specification_key or requirement.name,
+        )
+        return {
+            "requirement_id": str(requirement.id),
+            "requirement": requirement.name,
+            "status": "unknown",
+            "reason": (
+                "Comparison is ambiguous because no operator "
+                "was provided."
+            ),
+            "expected": expected,
+            "actual": actual,
+            "evidence": _evidence_payload(evidence),
+        }
+
+    if expected_number is not None and actual_number is not None and (
+        explicit_operator is not None
+        or _uses_keyword_minimum(expected_text, specification_key)
+    ):
         evidence = _matching_evidence(
             db,
             offer,
             specification_key or requirement.name,
         )
 
-        # A unit is not an operator. Ram/memory, storage/ssd, and
-        # warranty stay minimums. Any other operator-less number
-        # that carries a unit is ambiguous. Operator-less numbers
-        # without a unit stay equality.
-        if (
-            explicit_operator is None
-            and requirement.unit
-            and _normalise_text(requirement.unit)
-            and not _uses_keyword_minimum(expected_text, specification_key)
-        ):
-            return {
-                "requirement_id": str(requirement.id),
-                "requirement": requirement.name,
-                "status": "unknown",
-                "reason": (
-                    "Comparison is ambiguous because no operator "
-                    "was provided."
-                ),
-                "expected": expected,
-                "actual": actual,
-                "evidence": _evidence_payload(evidence),
-            }
-
         if explicit_operator is not None:
             operator = explicit_operator
-        elif _uses_keyword_minimum(expected_text, specification_key):
-            operator = ">="
         else:
-            operator = "="
+            operator = ">="
 
         status = (
             "met"
             if _compare_numbers(actual_number, expected_number, operator)
             else "not_met"
         )
+        reason = _comparison_reason(operator, met=status == "met")
+
+        if status == "met" and (
+            _mentions_warranty(requirement, expected_text)
+            or "warranty" in _normalise_text(specification_key)
+        ):
+            support = _containment_status(
+                expected_text,
+                _normalise_text(actual),
+            )
+            if support == "not_met" and expected_text in _normalise_text(
+                actual
+            ):
+                status = "not_met"
+                reason = "Supplier claim is negated."
+            elif support == "unknown":
+                status = "unknown"
+                reason = "Supplier claim is not clearly affirmative."
 
         return {
             "requirement_id": str(requirement.id),
             "requirement": requirement.name,
             "status": status,
-            "reason": _comparison_reason(operator, met=status == "met"),
+            "reason": reason,
             "expected": expected,
             "actual": actual,
             "evidence": _evidence_payload(evidence),
@@ -401,7 +519,62 @@ def _evaluate_requirement(
 
     actual_text = _normalise_text(actual)
 
-    status = "met" if expected_text in actual_text else "not_met"
+    if (
+        warranty_column
+        and expected_number is not None
+        and actual_number is None
+        and expected_text not in actual_text
+    ):
+        return {
+            "requirement_id": str(requirement.id),
+            "requirement": requirement.name,
+            "status": "unknown",
+            "reason": "No matching supplier evidence was found.",
+            "expected": expected,
+            "actual": actual,
+            "evidence": None,
+        }
+
+    # Both sides have a number, there is no explicit operator, and this
+    # is not a keyword minimum. The unit-ambiguous return above did not
+    # fire, and price never reaches here. Keep the text-path met result
+    # only when the claim is affirmative and the first numbers are equal.
+    # Otherwise the comparison is not reliable.
+    if (
+        expected_number is not None
+        and actual_number is not None
+        and explicit_operator is None
+        and not _uses_keyword_minimum(expected_text, specification_key)
+    ):
+        if not (
+            _containment_status(expected_text, actual_text) == "met"
+            and _compare_numbers(actual_number, expected_number, "=")
+        ):
+            evidence = _matching_evidence(
+                db,
+                offer,
+                specification_key or requirement.name,
+            )
+            return {
+                "requirement_id": str(requirement.id),
+                "requirement": requirement.name,
+                "status": "unknown",
+                "reason": "Supplier value could not be reliably compared.",
+                "expected": expected,
+                "actual": actual,
+                "evidence": _evidence_payload(evidence),
+            }
+
+    status = _containment_status(expected_text, actual_text)
+    if status == "met":
+        reason = "Supplier evidence matches the requirement."
+    elif status == "unknown":
+        reason = "Supplier claim is not clearly affirmative."
+    elif expected_text in actual_text:
+        status = "not_met"
+        reason = "Supplier claim is negated."
+    else:
+        reason = "Supplier evidence does not match the requirement."
 
     evidence = _matching_evidence(
         db,
@@ -413,11 +586,7 @@ def _evaluate_requirement(
         "requirement_id": str(requirement.id),
         "requirement": requirement.name,
         "status": status,
-        "reason": (
-            "Supplier evidence matches the requirement."
-            if status == "met"
-            else "Supplier evidence does not match the requirement."
-        ),
+        "reason": reason,
         "expected": expected,
         "actual": actual,
         "evidence": (
