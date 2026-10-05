@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 from sqlalchemy import select
@@ -77,65 +78,118 @@ def _decimal_or_none(value: Any) -> Decimal | None:
         return None
 
 
-def _normalise_offers(data: Any) -> list[dict[str, Any]]:
+def _source_hostname(source_url: str | None) -> str | None:
+    if not source_url:
+        return None
+
+    hostname = urlparse(source_url).hostname
+
+    if not hostname or not str(hostname).strip():
+        return None
+
+    return str(hostname)
+
+
+def _normalise_offer_item(
+    offer: Any,
+    *,
+    supplier_fallback: str | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(offer, dict):
+        return None
+
+    supplier_name = offer.get("supplier_name")
+    product_name = offer.get("product_name")
+
+    if not supplier_name:
+        supplier_name = supplier_fallback
+
+    if not supplier_name or not product_name:
+        return None
+
+    specifications = offer.get("specifications")
+
+    if specifications is not None and not isinstance(
+        specifications,
+        dict,
+    ):
+        specifications = None
+
+    return {
+        "supplier_name": str(supplier_name),
+        "product_name": str(product_name),
+        "model": (
+            str(offer["model"])
+            if offer.get("model") is not None
+            else None
+        ),
+        "price": _decimal_or_none(offer.get("price")),
+        "currency": (
+            str(offer["currency"])
+            if offer.get("currency") is not None
+            else None
+        ),
+        "availability": (
+            str(offer["availability"])
+            if offer.get("availability") is not None
+            else None
+        ),
+        "warranty": (
+            str(offer["warranty"])
+            if offer.get("warranty") is not None
+            else None
+        ),
+        "specifications": specifications,
+    }
+
+
+def _normalise_offer_list(offers: list[Any]) -> list[dict[str, Any]]:
+    normalised: list[dict[str, Any]] = []
+
+    for offer in offers:
+        item = _normalise_offer_item(offer)
+
+        if item is not None:
+            normalised.append(item)
+
+    return normalised
+
+
+def _normalise_offers(
+    data: Any,
+    *,
+    source_url: str | None = None,
+) -> list[dict[str, Any]]:
     if not isinstance(data, dict):
         return []
 
     offers = data.get("offers")
 
-    if not isinstance(offers, list):
+    if isinstance(offers, list):
+        return _normalise_offer_list(offers)
+
+    inner = data.get("data")
+
+    if not isinstance(inner, dict):
         return []
 
-    normalised: list[dict[str, Any]] = []
+    nested_offers = inner.get("offers")
 
-    for offer in offers:
-        if not isinstance(offer, dict):
-            continue
+    if isinstance(nested_offers, list):
+        return _normalise_offer_list(nested_offers)
 
-        supplier_name = offer.get("supplier_name")
-        product_name = offer.get("product_name")
+    if not inner.get("product_name"):
+        return []
 
-        if not supplier_name or not product_name:
-            continue
+    item = _normalise_offer_item(
+        inner,
+        supplier_fallback=_source_hostname(source_url),
+    )
 
-        specifications = offer.get("specifications")
+    if item is None:
+        return []
 
-        if specifications is not None and not isinstance(
-            specifications,
-            dict,
-        ):
-            specifications = None
-
-        normalised.append(
-            {
-                "supplier_name": str(supplier_name),
-                "product_name": str(product_name),
-                "model": (
-                    str(offer["model"])
-                    if offer.get("model") is not None
-                    else None
-                ),
-                "price": _decimal_or_none(offer.get("price")),
-                "currency": (
-                    str(offer["currency"])
-                    if offer.get("currency") is not None
-                    else None
-                ),
-                "availability": (
-                    str(offer["availability"])
-                    if offer.get("availability") is not None
-                    else None
-                ),
-                "warranty": (
-                    str(offer["warranty"])
-                    if offer.get("warranty") is not None
-                    else None
-                ),
-                "specifications": specifications,
-            }
-        )
-
-    return normalised
+    return [item]
 
 
 def _evidence_value(field: str, value: Any) -> str:
@@ -429,7 +483,10 @@ async def extract_offers_from_sources(
             if not structured_data:
                 continue
 
-            offers = _normalise_offers(structured_data)
+            offers = _normalise_offers(
+                structured_data,
+                source_url=source.url,
+            )
 
             for offer_data in offers:
                 offer = SupplierOffer(

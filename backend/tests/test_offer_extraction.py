@@ -395,3 +395,284 @@ async def test_extract_offers_records_bounded_generated_json_diagnostics():
             cleanup(db, organization.id)
 
         db.close()
+
+
+RICH_PAGE_MARKDOWN = (
+    "HP EliteBook 16GB RAM 512GB SSD $1499 warranty 3 years. "
+    "Also 32GB RAM card. Screen 14. CPU 7735. Image 800x600."
+)
+
+
+async def _extract_payload(payload, url, content=RICH_PAGE_MARKDOWN):
+    from app.ai.providers.base import ScrapeResult
+
+    class PayloadProvider:
+        name = "payload-stub"
+
+        async def scrape(
+            self,
+            scrape_url,
+            *,
+            schema=None,
+            use_browser=False,
+        ):
+            return ScrapeResult(
+                url=scrape_url,
+                title="Listing",
+                content=content,
+                structured_data=payload,
+            )
+
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization = create_organization(db)
+        procurement = Procurement(
+            organization_id=organization.id,
+            title="Laptops",
+            description="Purchase laptops.",
+            status="approved",
+        )
+        db.add(procurement)
+        db.commit()
+        db.refresh(procurement)
+
+        run = ResearchRun(
+            procurement_id=procurement.id,
+            status="executing",
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        source = ResearchSource(
+            research_run_id=run.id,
+            url=url,
+            provider="payload-stub",
+            raw_content=content,
+        )
+        db.add(source)
+        db.commit()
+        db.refresh(source)
+
+        offers = await extract_offers_from_sources(
+            db,
+            run,
+            PayloadProvider(),
+            [source],
+        )
+
+        return [
+            {
+                "supplier_name": offer.supplier_name,
+                "product_name": offer.product_name,
+                "model": offer.model,
+                "price": None if offer.price is None else str(offer.price),
+                "currency": offer.currency,
+                "availability": offer.availability,
+                "warranty": offer.warranty,
+                "specifications": offer.specifications,
+                "url": offer.url,
+            }
+            for offer in offers
+        ]
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_data_product_name_becomes_one_offer_with_hostname():
+    offers = await _extract_payload(
+        {
+            "status": "success",
+            "data": {"product_name": "HP EliteBook"},
+        },
+        "https://www.staples.com/hp-elitebook",
+    )
+
+    assert len(offers) == 1
+    assert offers[0]["supplier_name"] == "www.staples.com"
+    assert offers[0]["product_name"] == "HP EliteBook"
+    assert offers[0]["model"] is None
+    assert offers[0]["price"] is None
+    assert offers[0]["currency"] is None
+    assert offers[0]["availability"] is None
+    assert offers[0]["warranty"] is None
+    assert offers[0]["specifications"] is None
+
+
+@pytest.mark.asyncio
+async def test_data_object_preserves_optional_offer_fields():
+    offers = await _extract_payload(
+        {
+            "status": "success",
+            "data": {
+                "product_name": "HP EliteBook",
+                "supplier_name": "Staples",
+                "model": "840 G8",
+                "price": 1499,
+                "currency": "USD",
+                "availability": "In stock",
+                "warranty": "1 year",
+                "specifications": {"ram": "16GB"},
+            },
+        },
+        "https://www.staples.com/hp-elitebook",
+    )
+
+    assert len(offers) == 1
+    assert offers[0]["supplier_name"] == "Staples"
+    assert offers[0]["product_name"] == "HP EliteBook"
+    assert offers[0]["model"] == "840 G8"
+    assert offers[0]["price"] == "1499.00"
+    assert offers[0]["currency"] == "USD"
+    assert offers[0]["availability"] == "In stock"
+    assert offers[0]["warranty"] == "1 year"
+    assert offers[0]["specifications"] == {"ram": "16GB"}
+
+
+@pytest.mark.asyncio
+async def test_data_offers_list_keeps_each_item():
+    offers = await _extract_payload(
+        {
+            "status": "success",
+            "data": {
+                "offers": [
+                    {
+                        "supplier_name": "Staples",
+                        "product_name": "HP EliteBook",
+                    },
+                    {
+                        "supplier_name": "Staples",
+                        "product_name": "Dell Latitude",
+                    },
+                ]
+            },
+        },
+        "https://www.staples.com/laptops",
+    )
+
+    assert [offer["product_name"] for offer in offers] == [
+        "HP EliteBook",
+        "Dell Latitude",
+    ]
+    assert [offer["supplier_name"] for offer in offers] == [
+        "Staples",
+        "Staples",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invalid_data_shapes_create_no_offers():
+    from app.ai.providers.base import ScrapeResult
+
+    payloads = {
+        "https://www.staples.com/failed": {"status": "failed"},
+        "https://www.staples.com/empty": {"data": {}},
+        "https://www.staples.com/text": {"data": "page text 32GB"},
+        "https://www.staples.com/list": {"data": ["16GB", "32GB"]},
+        "notaurl": {
+            "status": "success",
+            "data": {"product_name": "HP EliteBook"},
+        },
+    }
+
+    class MultiProvider:
+        name = "multi-payload"
+
+        async def scrape(
+            self,
+            url,
+            *,
+            schema=None,
+            use_browser=False,
+        ):
+            return ScrapeResult(
+                url=url,
+                title="Listing",
+                content=RICH_PAGE_MARKDOWN,
+                structured_data=payloads[url],
+            )
+
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization = create_organization(db)
+        procurement = Procurement(
+            organization_id=organization.id,
+            title="Laptops",
+            description="Purchase laptops.",
+            status="approved",
+        )
+        db.add(procurement)
+        db.commit()
+        db.refresh(procurement)
+
+        run = ResearchRun(
+            procurement_id=procurement.id,
+            status="executing",
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        sources = []
+
+        for url in payloads:
+            source = ResearchSource(
+                research_run_id=run.id,
+                url=url,
+                provider="multi-payload",
+                raw_content=RICH_PAGE_MARKDOWN,
+            )
+            db.add(source)
+            sources.append(source)
+
+        db.commit()
+
+        offers = await extract_offers_from_sources(
+            db,
+            run,
+            MultiProvider(),
+            sources,
+        )
+
+        assert offers == []
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_top_level_offers_ignore_data_and_markdown():
+    offers = await _extract_payload(
+        {
+            "offers": [
+                {
+                    "supplier_name": "List Supplier",
+                    "product_name": "List Laptop",
+                }
+            ],
+            "data": {
+                "product_name": "Wrapped Laptop",
+                "price": 10,
+                "warranty": "9 years",
+                "specifications": {"ram": "32GB"},
+            },
+        },
+        "https://www.staples.com/laptops",
+    )
+
+    assert len(offers) == 1
+    assert offers[0]["supplier_name"] == "List Supplier"
+    assert offers[0]["product_name"] == "List Laptop"
+    assert offers[0]["price"] is None
+    assert offers[0]["warranty"] is None
+    assert offers[0]["specifications"] is None
