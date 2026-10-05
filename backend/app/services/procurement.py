@@ -78,9 +78,12 @@ def approve_procurement(
     db: Session,
     procurement: Procurement,
 ) -> Procurement:
-    if procurement.status != "review":
+    # New procurements are created as draft. Nothing in the API writes
+    # "review", so approval from draft is the reachable demo path.
+    # "review" remains accepted for rows already moved there directly.
+    if procurement.status not in {"draft", "review"}:
         raise ValueError(
-            "Only procurements in review status can be approved"
+            "Only procurements in draft or review status can be approved"
         )
 
     requirement_exists = db.scalar(

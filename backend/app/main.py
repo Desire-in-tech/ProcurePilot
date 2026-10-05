@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.api.routes.auth import router as auth_router
 from app.api.routes.procurements import router as procurement_router
 from app.api.routes.requirements import router as requirement_router
+from app.api.routes.research import router as research_router
 from app.api.routes.users import router as users_router
 
 app = FastAPI(
@@ -15,6 +16,7 @@ app = FastAPI(
 app.include_router(auth_router)
 app.include_router(procurement_router)
 app.include_router(requirement_router)
+app.include_router(research_router)
 app.include_router(users_router)
 
 

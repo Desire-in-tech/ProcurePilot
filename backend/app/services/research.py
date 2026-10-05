@@ -1,10 +1,11 @@
+import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.ai.providers import ResearchProvider
+from app.ai.providers import ResearchProvider, ScrapeResult
 from app.models import Procurement, ResearchRun, ResearchSource, ResearchTask
 from app.research.states import (
     RESEARCH_RUN_TRANSITIONS,
@@ -57,6 +58,69 @@ def build_search_query(procurement: Procurement) -> str:
     return " ".join(parts)
 
 
+# Providers are asked for this many results, and the returned list is
+# cut to the same number before any source is stored or scraped.
+# Anakin's search call sends a limit, but the adapter keeps every
+# result the API returns, so the slice is the reliable bound.
+SUPPLIER_SEARCH_SOURCE_CAP = 3
+
+# Anakin URL Scraper jobs are pending, processing, completed, or failed.
+# https://anakin.io/docs/api-reference/url-scraper/get-job-status
+_SCRAPE_POLL_INTERVAL_SECONDS = 4
+_SCRAPE_POLL_MAX_ATTEMPTS = 15
+_SCRAPE_FAILURE_STATUSES = frozenset({"failed", "error"})
+
+
+def _scrape_job_status(result: ScrapeResult) -> str:
+    status = result.metadata.get("status")
+
+    if status is None:
+        return ""
+
+    return str(status).strip().lower()
+
+
+async def await_completed_scrape(
+    provider: ResearchProvider,
+    job_id: str,
+) -> ScrapeResult:
+    """
+    Poll provider.get_scrape_job until Anakin reports a terminal status.
+
+    completed returns immediately. failed and error raise. Any other
+    status, including pending and processing, waits and is tried again
+    until the attempt limit.
+    """
+    last_status = "unknown"
+
+    for attempt in range(1, _SCRAPE_POLL_MAX_ATTEMPTS + 1):
+        result = await provider.get_scrape_job(job_id)
+        status = _scrape_job_status(result)
+
+        if status == "completed":
+            return result
+
+        if status in _SCRAPE_FAILURE_STATUSES:
+            detail = result.metadata.get("error")
+            message = f"Scrape job failed ({status})"
+
+            if detail:
+                message = f"{message}: {detail}"
+
+            raise RuntimeError(message)
+
+        last_status = status or "unknown"
+
+        if attempt < _SCRAPE_POLL_MAX_ATTEMPTS:
+            await asyncio.sleep(_SCRAPE_POLL_INTERVAL_SECONDS)
+
+    raise RuntimeError(
+        "Scrape job timed out after "
+        f"{_SCRAPE_POLL_MAX_ATTEMPTS} attempts "
+        f"(last status: {last_status})."
+    )
+
+
 def create_research_run(
     db: Session,
     procurement_id: UUID,
@@ -87,7 +151,7 @@ async def execute_supplier_search(
     run: ResearchRun,
     provider: ResearchProvider,
     *,
-    max_results: int = 5,
+    max_results: int = SUPPLIER_SEARCH_SOURCE_CAP,
 ) -> list[ResearchSource]:
     """
     Execute the initial supplier search and persist the returned
@@ -121,6 +185,7 @@ async def execute_supplier_search(
     run.status = ResearchRunStatus.EXECUTING.value
 
     query = build_search_query(procurement)
+    source_limit = min(max_results, SUPPLIER_SEARCH_SOURCE_CAP)
 
     task = ResearchTask(
         research_run_id=run.id,
@@ -129,7 +194,7 @@ async def execute_supplier_search(
         provider=getattr(provider, "name", None),
         input_data={
             "query": query,
-            "max_results": max_results,
+            "max_results": source_limit,
         },
         started_at=datetime.now(timezone.utc),
     )
@@ -141,8 +206,9 @@ async def execute_supplier_search(
     try:
         results = await provider.search(
             query,
-            max_results=max_results,
+            max_results=source_limit,
         )
+        results = list(results)[:source_limit]
 
         sources: list[ResearchSource] = []
 
@@ -245,10 +311,10 @@ async def collect_source_content(
                 task.external_job_id = job_id
                 db.commit()
 
-                scrape_result = await provider.get_scrape_job(job_id)
-
-                if scrape_result.metadata.get("status") != "completed":
-                    raise RuntimeError("Scrape job is not completed")
+                scrape_result = await await_completed_scrape(
+                    provider,
+                    job_id,
+                )
 
             source.title = scrape_result.title or source.title
             source.raw_content = scrape_result.content

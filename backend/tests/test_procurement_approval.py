@@ -127,8 +127,30 @@ def test_draft_procurement_cannot_be_approved():
 
         assert response.status_code == 400
         assert response.json()["detail"] == (
-            "Only procurements in review status can be approved"
+            "Procurement must have at least one requirement "
+            "before approval"
         )
+
+    finally:
+        delete_organization(organization_id)
+
+
+def test_draft_procurement_with_requirement_can_be_approved():
+    organization_id = create_organization("Approval Draft Success Test")
+    token = create_user(organization_id)
+
+    try:
+        procurement_id = create_procurement(organization_id, token)
+        add_requirement(organization_id, procurement_id, token)
+
+        response = client.post(
+            f"/api/v1/procurements/{procurement_id}/approve",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "approved"
+        assert response.json()["approved_at"] is not None
 
     finally:
         delete_organization(organization_id)
@@ -216,7 +238,7 @@ def test_approved_procurement_cannot_be_approved_again():
 
         assert response.status_code == 400
         assert response.json()["detail"] == (
-            "Only procurements in review status can be approved"
+            "Only procurements in draft or review status can be approved"
         )
 
     finally:

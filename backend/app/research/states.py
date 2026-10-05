@@ -48,6 +48,7 @@ class ResearchTaskType(str, Enum):
 PROCUREMENT_TRANSITIONS: dict[ProcurementStatus, set[ProcurementStatus]] = {
     ProcurementStatus.DRAFT: {
         ProcurementStatus.READY_FOR_RESEARCH,
+        ProcurementStatus.APPROVED,
         ProcurementStatus.REJECTED,
     },
     ProcurementStatus.READY_FOR_RESEARCH: {

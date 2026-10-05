@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ai.providers import ResearchProvider
+from app.services.research import await_completed_scrape
 from app.models import (
     OfferEvidence,
     Procurement,
@@ -196,10 +197,10 @@ async def extract_offers_from_sources(
             job_id = result.metadata.get("job_id")
 
             if job_id and not structured_data:
-                scrape_result = await provider.get_scrape_job(job_id)
-
-                if scrape_result.metadata.get("status") != "completed":
-                    raise RuntimeError("Scrape job is not completed")
+                scrape_result = await await_completed_scrape(
+                    provider,
+                    job_id,
+                )
 
                 structured_data = scrape_result.structured_data
 

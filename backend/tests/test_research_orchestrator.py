@@ -1,8 +1,10 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.ai.providers import MockResearchProvider, ScrapeResult, SearchResult
+from app.api.routes.research import get_result
 from app.db.database import SessionLocal
 from app.models import (
     OfferEvidence,
@@ -12,7 +14,9 @@ from app.models import (
     ResearchSource,
     ResearchTask,
     SupplierOffer,
+    User,
 )
+from app.services.research import SUPPLIER_SEARCH_SOURCE_CAP
 from app.services.research_orchestrator import start_research
 
 
@@ -336,7 +340,7 @@ async def test_pending_scrape_does_not_store_an_empty_page_and_fails_the_run():
         organization = create_organization(db)
         procurement = create_procurement(db, organization.id)
 
-        with pytest.raises(RuntimeError, match="Scrape job is not completed"):
+        with pytest.raises(RuntimeError, match="Scrape job timed out"):
             await start_research(
                 db,
                 procurement.id,
@@ -347,7 +351,9 @@ async def test_pending_scrape_does_not_store_an_empty_page_and_fails_the_run():
 
         assert failed_run.status == "failed"
         assert failed_run.completed_at is not None
-        assert failed_run.error == "Scrape job is not completed"
+        assert failed_run.error == (
+            "Scrape job timed out after 15 attempts (last status: pending)."
+        )
 
         source = (
             db.query(ResearchSource)
@@ -395,7 +401,7 @@ async def test_scrape_job_status_failed_fails_the_run():
         organization = create_organization(db)
         procurement = create_procurement(db, organization.id)
 
-        with pytest.raises(RuntimeError, match="Scrape job is not completed"):
+        with pytest.raises(RuntimeError, match="Scrape job failed"):
             await start_research(
                 db,
                 procurement.id,
@@ -637,6 +643,234 @@ async def test_search_failure_inside_start_research_stays_failed():
 
         assert completed_run.status == "completed"
         assert len(procurement_runs(db, procurement.id)) == 2
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+class OverflowSearchProvider(MockResearchProvider):
+    def __init__(self):
+        self.scraped_urls: list[str] = []
+
+    async def search(
+        self,
+        query: str,
+        *,
+        max_results: int = 10,
+    ):
+        return [
+            SearchResult(
+                title=f"Supplier {index}",
+                url=f"https://example.com/supplier-{index}",
+                snippet="extra result",
+            )
+            for index in range(SUPPLIER_SEARCH_SOURCE_CAP + 3)
+        ]
+
+    async def scrape(
+        self,
+        url: str,
+        *,
+        schema=None,
+        use_browser: bool = False,
+    ):
+        self.scraped_urls.append(url)
+        return await super().scrape(
+            url,
+            schema=schema,
+            use_browser=use_browser,
+        )
+
+
+@pytest.mark.asyncio
+async def test_start_research_scrapes_only_the_source_cap():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization = create_organization(db)
+        procurement = create_procurement(db, organization.id)
+        provider = OverflowSearchProvider()
+
+        run, sources = await start_research(
+            db,
+            procurement.id,
+            provider,
+        )
+
+        persisted_sources = (
+            db.query(ResearchSource)
+            .filter(ResearchSource.research_run_id == run.id)
+            .all()
+        )
+        kept_urls = {
+            f"https://example.com/supplier-{index}"
+            for index in range(SUPPLIER_SEARCH_SOURCE_CAP)
+        }
+
+        assert len(sources) == SUPPLIER_SEARCH_SOURCE_CAP
+        assert len(persisted_sources) <= SUPPLIER_SEARCH_SOURCE_CAP
+        assert {source.url for source in persisted_sources} == kept_urls
+        assert set(provider.scraped_urls) <= kept_urls
+        assert len(set(provider.scraped_urls)) <= SUPPLIER_SEARCH_SOURCE_CAP
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
+def test_get_research_result_returns_only_the_latest_run():
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization = create_organization(db)
+        procurement = create_procurement(db, organization.id)
+        user = User(
+            organization_id=organization.id,
+            name="Research User",
+            email=f"{uuid.uuid4().hex[:12]}@example.com",
+            password_hash="not-used",
+            role="admin",
+        )
+        db.add(user)
+
+        now = datetime.now(timezone.utc)
+        older = ResearchRun(
+            procurement_id=procurement.id,
+            status="completed",
+            created_at=now - timedelta(minutes=5),
+        )
+        newer = ResearchRun(
+            procurement_id=procurement.id,
+            status="completed",
+            created_at=now,
+        )
+        db.add_all([older, newer])
+        db.commit()
+        db.refresh(older)
+        db.refresh(newer)
+
+        older_source = ResearchSource(
+            research_run_id=older.id,
+            url="https://example.com/older",
+            title="Older source",
+            source_type="scraped",
+        )
+        newer_source = ResearchSource(
+            research_run_id=newer.id,
+            url="https://example.com/newer",
+            title="Newer source",
+            source_type="scraped",
+        )
+        db.add_all([older_source, newer_source])
+        db.commit()
+        db.refresh(older_source)
+        db.refresh(newer_source)
+
+        older_offer = SupplierOffer(
+            procurement_id=procurement.id,
+            supplier_name="Older Supplier",
+            product_name="Older Laptop",
+        )
+        newer_offer = SupplierOffer(
+            procurement_id=procurement.id,
+            supplier_name="Newer Supplier",
+            product_name="Newer Laptop",
+        )
+        db.add_all([older_offer, newer_offer])
+        db.commit()
+        db.refresh(older_offer)
+        db.refresh(newer_offer)
+
+        db.add_all(
+            [
+                OfferEvidence(
+                    offer_id=older_offer.id,
+                    source_id=older_source.id,
+                    field="supplier_name",
+                    value="Older Supplier",
+                ),
+                OfferEvidence(
+                    offer_id=newer_offer.id,
+                    source_id=newer_source.id,
+                    field="supplier_name",
+                    value="Newer Supplier",
+                ),
+                ResearchTask(
+                    research_run_id=older.id,
+                    task_type="compare_offers",
+                    status="completed",
+                    output_data={"ranked_offer_ids": ["older"]},
+                ),
+                ResearchTask(
+                    research_run_id=older.id,
+                    task_type="generate_recommendation",
+                    status="completed",
+                    output_data={
+                        "status": "recommended",
+                        "supplier_name": "Older Supplier",
+                    },
+                ),
+                ResearchTask(
+                    research_run_id=newer.id,
+                    task_type="compare_offers",
+                    status="completed",
+                    output_data={"ranked_offer_ids": ["newer"]},
+                ),
+                ResearchTask(
+                    research_run_id=newer.id,
+                    task_type="generate_recommendation",
+                    status="completed",
+                    output_data={
+                        "status": "recommended",
+                        "supplier_name": "Newer Supplier",
+                    },
+                ),
+            ]
+        )
+        db.commit()
+
+        result = get_result(
+            procurement.id,
+            current_user=user,
+            db=db,
+        )
+
+        assert result.research_run_id == newer.id
+        assert [offer.supplier_name for offer in result.offers] == [
+            "Newer Supplier",
+        ]
+        assert result.offers[0].evidence[0].source_url == (
+            "https://example.com/newer"
+        )
+        assert result.compare_offers == {"ranked_offer_ids": ["newer"]}
+        assert result.recommendation["supplier_name"] == "Newer Supplier"
+
+        assert db.get(ResearchRun, older.id) is not None
+        assert db.get(SupplierOffer, older_offer.id) is not None
+        older_evidence = (
+            db.query(OfferEvidence)
+            .filter(OfferEvidence.offer_id == older_offer.id)
+            .one()
+        )
+        assert older_evidence.value == "Older Supplier"
+        older_recommendation = (
+            db.query(ResearchTask)
+            .filter(
+                ResearchTask.research_run_id == older.id,
+                ResearchTask.task_type == "generate_recommendation",
+            )
+            .one()
+        )
+        assert older_recommendation.output_data["supplier_name"] == (
+            "Older Supplier"
+        )
 
     finally:
         if organization is not None:

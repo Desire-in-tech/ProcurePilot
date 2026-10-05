@@ -14,6 +14,12 @@ from app.schemas.requirement import (
     RequirementResponse,
     RequirementUpdate,
 )
+from app.schemas.research import (
+    ResearchEvidenceResponse,
+    ResearchOfferResponse,
+    ResearchRunCreated,
+    ResearchRunResponse,
+)
 
 __all__ = [
     "LoginRequest",
@@ -27,6 +33,10 @@ __all__ = [
     "RequirementCreate",
     "RequirementResponse",
     "RequirementUpdate",
+    "ResearchEvidenceResponse",
+    "ResearchOfferResponse",
+    "ResearchRunCreated",
+    "ResearchRunResponse",
 ]
 
 from app.schemas.user import ManagedUserResponse, UserCreate
