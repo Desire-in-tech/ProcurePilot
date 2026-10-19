@@ -651,6 +651,39 @@ async def test_search_failure_inside_start_research_stays_failed():
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_agent_failure_before_search_marks_planning_run_failed():
+    class FailingResearchAgent:
+        async def research(self, *_args, **_kwargs):
+            raise RuntimeError("OpenRouter request failed (ConnectError).")
+
+    db = SessionLocal()
+    organization = None
+
+    try:
+        organization = create_organization(db)
+        procurement = create_procurement(db, organization.id)
+
+        with pytest.raises(RuntimeError, match="OpenRouter request failed"):
+            await start_research(
+                db,
+                procurement.id,
+                MockResearchProvider(),
+                FailingResearchAgent(),
+            )
+
+        failed_run = procurement_runs(db, procurement.id)[0]
+        assert failed_run.status == "failed"
+        assert failed_run.error == "OpenRouter request failed (ConnectError)."
+        assert failed_run.completed_at is not None
+
+    finally:
+        if organization is not None:
+            cleanup(db, organization.id)
+
+        db.close()
+
+
 class OverflowSearchProvider(MockResearchProvider):
     def __init__(self):
         self.scraped_urls: list[str] = []

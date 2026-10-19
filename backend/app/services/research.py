@@ -152,6 +152,7 @@ async def execute_supplier_search(
     provider: ResearchProvider,
     *,
     max_results: int = SUPPLIER_SEARCH_SOURCE_CAP,
+    query: str | None = None,
 ) -> list[ResearchSource]:
     """
     Execute the initial supplier search and persist the returned
@@ -184,7 +185,9 @@ async def execute_supplier_search(
     )
     run.status = ResearchRunStatus.EXECUTING.value
 
-    query = build_search_query(procurement)
+    query = query or build_search_query(procurement)
+    if not query.strip():
+        raise ValueError("Search query cannot be empty")
     source_limit = min(max_results, SUPPLIER_SEARCH_SOURCE_CAP)
 
     task = ResearchTask(

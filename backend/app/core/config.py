@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
 
     anakin_api_key: str | None = None
+    openrouter_api_key: str | None = None
+    openrouter_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
 
     model_config = SettingsConfigDict(
         env_file=".env",

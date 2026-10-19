@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.ai.research_agent import OpenRouterResearchAgent
 from app.ai.providers.anakin import AnakinProvider
 from app.core.config import settings
 from app.dependencies import get_current_user, get_database
@@ -164,14 +165,24 @@ async def start(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Anakin API key is not configured",
         )
+    if not settings.openrouter_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="OpenRouter API key is not configured",
+        )
 
     provider = AnakinProvider(settings.anakin_api_key)
+    research_agent = OpenRouterResearchAgent(
+        settings.openrouter_api_key,
+        settings.openrouter_model,
+    )
 
     try:
         run, sources = await start_research(
             db,
             procurement.id,
             provider,
+            research_agent,
         )
     except ValueError as exc:
         raise HTTPException(

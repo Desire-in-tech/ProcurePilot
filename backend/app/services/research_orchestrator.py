@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.ai.research_agent import OpenRouterResearchAgent
 from app.ai.providers import ResearchProvider
 from app.models import Procurement, ResearchRun
 from app.research.states import (
@@ -16,6 +17,7 @@ from app.services.offer_comparison import compare_offers
 from app.services.recommendation import generate_recommendation
 from app.services.requirement_verification import verify_offers
 from app.services.research import (
+    build_search_query,
     collect_source_content,
     create_research_run,
     execute_supplier_search,
@@ -30,6 +32,7 @@ ACTIVE_RUN_STATUSES = {
 }
 
 _OPEN_RUN_STATUSES = {
+    ResearchRunStatus.PLANNING.value,
     ResearchRunStatus.EXECUTING.value,
     ResearchRunStatus.EVALUATING.value,
 }
@@ -95,6 +98,7 @@ async def start_research(
     db: Session,
     procurement_id: UUID,
     provider: ResearchProvider,
+    research_agent: OpenRouterResearchAgent | None = None,
 ):
     """
     Start the autonomous research workflow for an approved procurement.
@@ -139,18 +143,78 @@ async def start_research(
     run_id = run.id
 
     try:
-        sources = await execute_supplier_search(
-            db,
-            run,
-            provider,
-        )
+        if research_agent is None:
+            sources = await execute_supplier_search(
+                db,
+                run,
+                provider,
+            )
+            collected_sources = await collect_source_content(
+                db,
+                run,
+                provider,
+                sources,
+            )
+        else:
+            sources = []
+            scraped_source_ids: set[UUID] = set()
 
-        collected_sources = await collect_source_content(
-            db,
-            run,
-            provider,
-            sources,
-        )
+            async def search_suppliers(query: str) -> list[dict]:
+                found = await execute_supplier_search(
+                    db,
+                    run,
+                    provider,
+                    query=query,
+                )
+                sources.extend(found)
+                return [
+                    {
+                        "url": source.url,
+                        "title": source.title,
+                        "snippet": source.raw_content,
+                    }
+                    for source in found
+                ]
+
+            async def scrape_source(url: str) -> dict:
+                source = next(
+                    (source for source in sources if source.url == url),
+                    None,
+                )
+                if source is None:
+                    raise ValueError("Source is not part of this research run")
+
+                await collect_source_content(
+                    db,
+                    run,
+                    provider,
+                    [source],
+                )
+                scraped_source_ids.add(source.id)
+                return {
+                    "url": source.url,
+                    "title": source.title,
+                    "content": source.raw_content,
+                }
+
+            await research_agent.research(
+                build_search_query(procurement),
+                search_suppliers=search_suppliers,
+                scrape_source=scrape_source,
+            )
+
+            remaining_sources = [
+                source
+                for source in sources
+                if source.id not in scraped_source_ids
+            ]
+            await collect_source_content(
+                db,
+                run,
+                provider,
+                remaining_sources,
+            )
+            collected_sources = sources
 
         await extract_offers_from_sources(
             db,
