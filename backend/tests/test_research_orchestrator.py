@@ -675,6 +675,7 @@ async def test_agent_failure_before_search_marks_planning_run_failed():
         failed_run = procurement_runs(db, procurement.id)[0]
         assert failed_run.status == "failed"
         assert failed_run.error == "OpenRouter request failed (ConnectError)."
+        assert failed_run.started_at is not None
         assert failed_run.completed_at is not None
 
     finally:

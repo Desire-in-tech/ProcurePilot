@@ -137,6 +137,7 @@ async def start_research(
         RESEARCH_RUN_TRANSITIONS,
     )
     run.status = ResearchRunStatus.PLANNING.value
+    run.started_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(run)
 
