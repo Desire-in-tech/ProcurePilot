@@ -55,6 +55,22 @@ function ProcurementDetail() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [isAdding, setIsAdding] = useState(false)
 
+  const groupedRequirements = useMemo(
+    () =>
+      (procurement?.requirements ?? []).reduce<
+        Record<string, ProcurementRequirement[]>
+      >((groups, requirement) => {
+        if (!groups[requirement.category]) {
+          groups[requirement.category] = []
+        }
+
+        groups[requirement.category].push(requirement)
+
+        return groups
+      }, {}),
+    [procurement?.requirements],
+  )
+
   if (!procurement) {
     return (
       <div className="page">
@@ -231,22 +247,6 @@ function ProcurementDetail() {
       navigate(`/procurements/${procurementId}/suppliers`)
     }
   }
-
-  const groupedRequirements = useMemo(
-    () =>
-      procurement.requirements.reduce<
-        Record<string, ProcurementRequirement[]>
-      >((groups, requirement) => {
-        if (!groups[requirement.category]) {
-          groups[requirement.category] = []
-        }
-
-        groups[requirement.category].push(requirement)
-
-        return groups
-      }, {}),
-    [procurement.requirements],
-  )
 
   return (
     <div className="page">

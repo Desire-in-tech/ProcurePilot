@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
   ArrowRight,
   ClipboardList,
@@ -19,13 +19,9 @@ function Procurements() {
   const navigate = useNavigate()
 
   const [request, setRequest] = useState('')
-  const [procurements, setProcurements] = useState<ProcurementRequest[]>([])
+  const [procurements, setProcurements] = useState<ProcurementRequest[]>(() => getProcurements())
   const [isCreating, setIsCreating] = useState(false)
   const [search, setSearch] = useState('')
-
-  useEffect(() => {
-    setProcurements(getProcurements())
-  }, [])
 
   function handleCreateProcurement() {
     const trimmedRequest = request.trim()
