@@ -1,16 +1,19 @@
 import json
-import os
 import sys
+from pathlib import Path
 
 import httpx
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.core.config import settings
 
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 def main() -> int:
-    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    model = os.environ.get("OPENROUTER_MODEL", "").strip()
+    api_key = (settings.openrouter_api_key or "").strip()
+    model = settings.openrouter_model.strip()
     missing = [
         name
         for name, value in (
@@ -68,6 +71,9 @@ def main() -> int:
             print("OpenRouter rate limit reached (HTTP 429). Try again later.")
         else:
             print(f"OpenRouter returned HTTP {exc.response.status_code}.")
+            body = exc.response.text[:1500]
+            if body:
+                print(f"Error details: {body}")
         return 1
     except httpx.TimeoutException:
         print("OpenRouter request timed out.")
